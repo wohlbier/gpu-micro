@@ -40,17 +40,17 @@ typedef enum {
 
 struct testMicro {
     const char name[20];
-    void (*getMicroByteCount)(
-        size_t *sendcount, size_t *recvcount, size_t *paramcount,
-        size_t *sendInplaceOffset, size_t *recvInplaceOffset,
-        size_t count, int nranks);
-    testResult_t (*initData)(struct threadArgs* args, ncclDataType_t type,
-                             ncclRedOp_t op, int root, int rep, int in_place);
-    void (*getBw)(size_t count, int typesize, double sec, double* algBw,
-                  double* busBw, int nranks);
-    testResult_t (*runMicro)(void* sendbuff, void* recvbuff, size_t count,
-                            ncclDataType_t type, ncclRedOp_t op, int root,
-                            ncclComm_t comm, cudaStream_t stream);
+//    void (*getMicroByteCount)(
+//        size_t *sendcount, size_t *recvcount, size_t *paramcount,
+//        size_t *sendInplaceOffset, size_t *recvInplaceOffset,
+//        size_t count, int nranks);
+//    testResult_t (*initData)(struct threadArgs* args, ncclDataType_t type,
+//                             ncclRedOp_t op, int root, int rep, int in_place);
+//    void (*getBw)(size_t count, int typesize, double sec, double* algBw,
+//                  double* busBw, int nranks);
+//    testResult_t (*runMicro)(void* sendbuff, void* recvbuff, size_t count,
+//                            ncclDataType_t type, ncclRedOp_t op, int root,
+//                            ncclComm_t comm, cudaStream_t stream);
 };
 extern struct testMicro copyTest;
 
