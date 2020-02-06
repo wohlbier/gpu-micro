@@ -14,6 +14,7 @@ static size_t stepFactor = 1;
 static int datacheck = 1;
 static int warmup_iters = 5;
 static int iters = 20;
+static int microtype = 0; // microFloat, etc
 
 double parsesize(char *value) {
     long long int units;
@@ -33,11 +34,34 @@ double parsesize(char *value) {
     return size;
 }
 
+testResult_t threadRunTests(struct threadArgs* args) {
+    // Set device to the first of our GPUs. If we don't do that, some
+    // operations will be done on the current GPU (by default : 0) and if the
+    // GPUs are in exclusive mode those operations will fail.
+    int gpuid = args->localRank*args->nThreads*args->nGpus
+        + args->thread*args->nGpus;
+    CUDACHECK(cudaSetDevice(gpuid));
+    TESTCHECK(microTestEngine.runTest(args, 0,(microDataType_t)microtype));
+    //test_typenames[nccltype],
+    //(ncclRedOp_t)ncclop,
+    //test_opnames[ncclop])
+    return testSuccess;
+}
+
+void* threadLauncher(void* thread_) {
+  struct testThread* thread = (struct testThread*)thread_;
+  thread->ret = thread->func(&thread->args);
+  return NULL;
+}
+
+testResult_t threadLaunch(struct testThread* thread) {
+  pthread_create(&thread->thread, NULL, threadLauncher, thread);
+  return testSuccess;
+}
+
 testResult_t AllocateBuffs(void **sendbuff, size_t sendBytes, void **recvbuff,
                            size_t recvBytes, void **expected, size_t nbytes,
                            int nranks) {
-    printf("%d %d\n", nbytes, recvBytes);
-
     CUDACHECK(cudaMalloc(sendbuff, nbytes));
     CUDACHECK(cudaMalloc(recvbuff, nbytes));
     CUDACHECK(cudaMalloc(expected, recvBytes));
@@ -137,12 +161,11 @@ int main(int argc, char* argv[]) {
 }
 
 testResult_t run() {
-    int nProcs = 1, proc = 0;
     int localRank = 0;
     char hostname[1024];
     getHostName(hostname, 1024);
 
-    is_main_thread = (proc == 0) ? 1 : 0;
+    is_main_thread = 1;
 
     PRINT("# nThread %d nGpus %d minBytes %ld maxBytes %ld step: %ld(%s) warmup iters: %d iters: %d validation: %d \n",
           nThreads, nGpus, minBytes, maxBytes,
@@ -156,7 +179,7 @@ testResult_t run() {
     int len = 0;
     for (int i=0; i<nThreads*nGpus; i++) {
         int cudaDev = localRank*nThreads*nGpus+i;
-        int rank = proc*nThreads*nGpus+i;
+        int rank = i;
         cudaDeviceProp prop;
         CUDACHECK(cudaGetDeviceProperties(&prop, cudaDev));
         len += snprintf(line+len, MAX_LINE-len,
@@ -173,138 +196,102 @@ testResult_t run() {
     size_t sendBytes, recvBytes;
 
     microTestEngine.getBuffSize(&sendBytes, &recvBytes, (size_t)maxBytes,
-                                (size_t)nProcs*nGpus*nThreads);
+                                (size_t)nGpus*nThreads);
 
-  for (int i=0; i<nGpus*nThreads; i++) {
-      CUDACHECK(cudaSetDevice(localRank*nThreads*nGpus+i));
-      AllocateBuffs(sendbuffs+i, sendBytes, recvbuffs+i, recvBytes, expected+i,
-                    (size_t)maxBytes, nProcs*nThreads*nGpus);
-      CUDACHECK(cudaStreamCreateWithFlags(streams+i, cudaStreamNonBlocking));
-  }
+    for (int i=0; i<nGpus*nThreads; i++) {
+        CUDACHECK(cudaSetDevice(localRank*nThreads*nGpus+i));
+        AllocateBuffs(sendbuffs+i, sendBytes, recvbuffs+i, recvBytes,
+                      expected+i, (size_t)maxBytes, nThreads*nGpus);
+        CUDACHECK(cudaStreamCreateWithFlags(streams+i, cudaStreamNonBlocking));
+    }
 
-//  //if parallel init is not selected, use main thread to initialize NCCL
-//  ncclComm_t* comms = (ncclComm_t*)malloc(sizeof(ncclComm_t)*nThreads*nGpus);
-//  if (!parallel_init) {
-//     if (nProcs == 1) {
-//       int gpuArray[nGpus*nThreads];
-//       for (int i=0; i<nGpus*nThreads; i++) gpuArray[i] = i;
-//       NCCLCHECK(ncclCommInitAll(comms, nGpus*nThreads, gpuArray));
-//     } else {
-//       NCCLCHECK(ncclGroupStart());
-//       for (int i=0; i<nGpus*nThreads; i++) {
-//         CUDACHECK(cudaSetDevice(localRank*nThreads*nGpus+i));
-//         NCCLCHECK(ncclCommInitRank(comms+i, nProcs*nThreads*nGpus, ncclId, pro\
-//c*nThreads*nGpus+i));
-//       }
-//       NCCLCHECK(ncclGroupEnd());
-//     }
-//  }
+    int errors[nThreads];
+    double bw[nThreads];
+    double* delta;
+    CUDACHECK(cudaHostAlloc(&delta, sizeof(double)*nThreads,
+                            cudaHostAllocPortable | cudaHostAllocMapped));
+    int bw_count[nThreads];
+    for (int t=0; t<nThreads; t++) {
+        bw[t] = 0.0;
+        errors[t] = bw_count[t] = 0;
+    }
+    PRINT("#\n");
+    print_header();
 
-//  int errors[nThreads];
-//  double bw[nThreads];
-//  double* delta;
-//  CUDACHECK(cudaHostAlloc(&delta, sizeof(double)*nThreads, cudaHostAllocPortabl\
-//e | cudaHostAllocMapped));
-//  int bw_count[nThreads];
-//  for (int t=0; t<nThreads; t++) {
-//    bw[t] = 0.0;
-//    errors[t] = bw_count[t] = 0;
-//  }
-//  PRINT("#\n");
-//  print_header();
+    //int* sync = (int*)calloc(2, sizeof(int));
+    //int* barrier = (int*)calloc(2, sizeof(int));
 
-//  int* sync = (int*)calloc(2, sizeof(int));
-//  int* barrier = (int*)calloc(2, sizeof(int));
+    struct testThread threads[nThreads];
+    memset(threads, 0, sizeof(struct testThread)*nThreads);
 
-//  struct testThread threads[nThreads];
-//  memset(threads, 0, sizeof(struct testThread)*nThreads);
+    for (int t=nThreads-1; t>=0; t--) {
+        threads[t].args.minbytes=minBytes;
+        threads[t].args.maxbytes=maxBytes;
+        threads[t].args.stepbytes=stepBytes;
+        threads[t].args.stepfactor=stepFactor;
+        threads[t].args.localRank = localRank;
 
-//  for (int t=nThreads-1; t>=0; t--) {
-//    threads[t].args.minbytes=minBytes;
-//    threads[t].args.maxbytes=maxBytes;
-//    threads[t].args.stepbytes=stepBytes;
-//    threads[t].args.stepfactor=stepFactor;
-//    threads[t].args.localRank = localRank;
+        threads[t].args.nThreads=nThreads;
+        threads[t].args.thread=t;
+        threads[t].args.nGpus=nGpus;
+        threads[t].args.sendbuffs = sendbuffs+t*nGpus;
+        threads[t].args.recvbuffs = recvbuffs+t*nGpus;
+        threads[t].args.expected = expected+t*nGpus;
+        threads[t].args.streams=streams+t*nGpus;
 
-//    threads[t].args.nProcs=nProcs;
-//    threads[t].args.proc=proc;
-//    threads[t].args.nThreads=nThreads;
-//    threads[t].args.thread=t;
-//    threads[t].args.nGpus=nGpus;
-//    threads[t].args.sendbuffs = sendbuffs+t*nGpus;
-//    threads[t].args.recvbuffs = recvbuffs+t*nGpus;
-//    threads[t].args.expected = expected+t*nGpus;
-//    threads[t].args.ncclId = ncclId;
-//    threads[t].args.comms=comms+t*nGpus;
-//    threads[t].args.streams=streams+t*nGpus;
+        //threads[t].args.barrier = (volatile int*)barrier;
+        //threads[t].args.barrier_idx = 0;
+        //threads[t].args.sync = (volatile int*)sync;
+        //threads[t].args.sync_idx = 0;
+        //threads[t].args.deltaThreads = delta;
+        //threads[t].args.deltaHost = (delta + t);
+        //threads[t].args.delta = delta;
+        //threads[t].args.errors=errors+t;
+        //threads[t].args.bw=bw+t;
+        //threads[t].args.bw_count=bw_count+t;
 
-//    threads[t].args.barrier = (volatile int*)barrier;
-//    threads[t].args.barrier_idx = 0;
-//    threads[t].args.sync = (volatile int*)sync;
-//    threads[t].args.sync_idx = 0;
-//    threads[t].args.deltaThreads = delta;
-//    threads[t].args.deltaHost = (delta + t);
-//    threads[t].args.delta = delta;
-//    threads[t].args.errors=errors+t;
-//    threads[t].args.bw=bw+t;
-//    threads[t].args.bw_count=bw_count+t;
+        threads[t].func = threadRunTests;
+        if (t)
+            TESTCHECK(threadLaunch(threads+t));
+        else
+            TESTCHECK(threads[t].func(&threads[t].args));
+    }
 
-//    threads[t].func = parallel_init ? threadInit : threadRunTests;
-//    if (t)
-//      TESTCHECK(threadLaunch(threads+t));
-//    else
-//      TESTCHECK(threads[t].func(&threads[t].args));
-//  }
+    // Wait for other threads and accumulate stats and errors
+    for (int t=nThreads-1; t>=0; t--) {
+        if (t) pthread_join(threads[t].thread, NULL);
+        TESTCHECK(threads[t].ret);
+        if (t) {
+            errors[0] += errors[t];
+            bw[0] += bw[t];
+            bw_count[0] += bw_count[t];
+        }
+    }
 
-//  // Wait for other threads and accumulate stats and errors
-//  for (int t=nThreads-1; t>=0; t--) {
-//    if (t) pthread_join(threads[t].thread, NULL);
-//    TESTCHECK(threads[t].ret);
-//    if (t) {
-//      errors[0] += errors[t];
-//      bw[0] += bw[t];
-//      bw_count[0] += bw_count[t];
-//    }
-//  }
+    // Free off CUDA allocated memory
+    for (int i=0; i<nGpus*nThreads; i++) {
+        CUDACHECK(cudaFree(sendbuffs[i]));
+        CUDACHECK(cudaFree(recvbuffs[i]));
+        CUDACHECK(cudaFree(expected[i]));
+    }
+    CUDACHECK(cudaFreeHost(delta));
 
-//#ifdef MPI_SUPPORT
-//  MPI_Allreduce(MPI_IN_PLACE, &errors[0], 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-//#endif
+    char* str = getenv("MICRO_TESTS_MIN_BW");
+    double check_avg_bw = str ? atof(str) : -1;
+    bw[0] /= bw_count[0];
 
-// if (!parallel_init) {
-//    for(int i=0; i<nGpus*nThreads; ++i)
-//      NCCLCHECK(ncclCommDestroy(comms[i]));
-//    free(comms);
-//  }
+    PRINT("# Out of bounds values : %d %s\n", errors[0],
+          errors[0] ? "FAILED" : "OK");
+    PRINT("# Avg bus bandwidth    : %g %s\n", bw[0],
+          check_avg_bw == -1 ? "" : (bw[0] < check_avg_bw*(0.9)
+                                     ? "FAILED" : "OK"));
+    PRINT("#\n");
 
-//  // Free off CUDA allocated memory
-//  for (int i=0; i<nGpus*nThreads; i++) {
-//    CUDACHECK(cudaFree(sendbuffs[i]));
-//    CUDACHECK(cudaFree(recvbuffs[i]));
-//    CUDACHECK(cudaFree(expected[i]));
-//  }
-//  CUDACHECK(cudaFreeHost(delta));
+    // 'cuda-memcheck --leak-check full' requires this
+    cudaDeviceReset();
 
-//  char* str = getenv("NCCL_TESTS_MIN_BW");
-//  double check_avg_bw = str ? atof(str) : -1;
-//  bw[0] /= bw_count[0];
-
-//  PRINT("# Out of bounds values : %d %s\n", errors[0], errors[0] ? "FAILED" : "\
-//OK");
-//  PRINT("# Avg bus bandwidth    : %g %s\n", bw[0], check_avg_bw == -1 ? "" : (b\
-//w[0] < check_avg_bw*(0.9) ? "FAILED" : "OK"));
-//  PRINT("#\n");
-//#ifdef MPI_SUPPORT
-//  MPI_Finalize();
-//#endif
-
-//  // 'cuda-memcheck --leak-check full' requires this
-//  cudaDeviceReset();
-
-//  if (errors[0] || bw[0] < check_avg_bw*(0.9))
-//    exit(EXIT_FAILURE);
-//  else
-//    exit(EXIT_SUCCESS);
-    testResult_t tr;
-    return tr;
+    if (errors[0] || bw[0] < check_avg_bw*(0.9))
+        exit(EXIT_FAILURE);
+    else
+        exit(EXIT_SUCCESS);
 }

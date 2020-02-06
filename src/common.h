@@ -1,6 +1,7 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#include <stdio.h>
 #include <pthread.h>
 
 typedef double microDataType_t;
@@ -21,9 +22,37 @@ typedef enum {
     testSuccess = 0,
     testInternalError = 1,
     testCudaError = 2,
-    testNcclError = 3,
-    testCuRandError = 4
+    testCuRandError = 3
 } testResult_t;
+
+// Relay errors up and trace
+#define TESTCHECK(cmd) do {                             \
+        testResult_t r = cmd;                           \
+        if (r!= testSuccess) {                          \
+            char hostname[1024];                        \
+            getHostName(hostname, 1024);                \
+            printf(" .. %s: Test failure %s:%d\n",      \
+                   hostname,                            \
+                   __FILE__,__LINE__);                  \
+            return r;                                   \
+        }                                               \
+} while(0)
+
+struct testMicro {
+    const char name[20];
+    void (*getMicroByteCount)(
+        size_t *sendcount, size_t *recvcount, size_t *paramcount,
+        size_t *sendInplaceOffset, size_t *recvInplaceOffset,
+        size_t count, int nranks);
+    testResult_t (*initData)(struct threadArgs* args, ncclDataType_t type,
+                             ncclRedOp_t op, int root, int rep, int in_place);
+    void (*getBw)(size_t count, int typesize, double sec, double* algBw,
+                  double* busBw, int nranks);
+    testResult_t (*runMicro)(void* sendbuff, void* recvbuff, size_t count,
+                            ncclDataType_t type, ncclRedOp_t op, int root,
+                            ncclComm_t comm, cudaStream_t stream);
+};
+extern struct testMicro copyTest;
 
 struct testEngine {
     void (*getBuffSize)(size_t *sendcount, size_t *recvcount, size_t count,
@@ -46,7 +75,28 @@ struct threadArgs {
     int thread;
     int nGpus;
     int localRank;
+
+    void** sendbuffs;
+    void** recvbuffs;
+    cudaStream_t* streams;
+
+    void** expected;
 };
+
+typedef testResult_t (*threadFunc_t)(struct threadArgs* args);
+struct testThread {
+    pthread_t thread;
+    threadFunc_t func;
+    struct threadArgs args;
+    testResult_t ret;
+};
+
+// provided by common.cu
+extern void AllocateBuffs(void **sendbuff, void **recvbuff, void **expected,
+                          void **expectedHost, size_t nbytes, int nranks);
+
+// provided by test
+extern void print_header();
 
 #include <unistd.h>
 static void getHostName(char* hostname, int maxlen) {
