@@ -100,7 +100,9 @@ void printHelp(void) {
     printf(
         "--p2p_read\tUse P2P reads for data transfers between GPU pairs and show "
         "corresponding results.\n \t\tDefault used is P2P write operation.\n");
-    printf("--sm_copy\t\tUse SM intiated p2p transfers instead of Copy Engine\n");
+    printf("--sm_copy\tUse SM intiated p2p transfers instead of Copy Engine\n");
+    printf("--nElements=N\tNumber of elements for bw. Default: 10000000\n");
+    printf("--nRepeat=N\tNumber of repeats for bw. Default: 5\n");
 }
 
 void checkP2Paccess(int numGPUs) {
@@ -134,7 +136,6 @@ void performP2PCopy(int *dest, int destDevice, int *src, int srcDevice,
     cudaCheckError();
 
     if (p2p_mechanism == SM && p2paccess) {
-        printf("hola\n");
         for (int r = 0; r < repeat; r++) {
             copyp2p<<<numBlocks, blockSize, 0, streamToRun>>>(
                 (int4 *)dest, (int4 *)src, num_elems / 4);
@@ -147,9 +148,8 @@ void performP2PCopy(int *dest, int destDevice, int *src, int srcDevice,
     }
 }
 
-void outputBandwidthMatrix(int numGPUs, bool p2p, P2PDataTransfer p2p_method) {
-    int numElems = 10000000;
-    int repeat = 5;
+void outputBandwidthMatrix(int numGPUs, bool p2p, P2PDataTransfer p2p_method,
+                           int numElems, int repeat) {
     volatile int *flag = NULL;
     vector<int *> buffers(numGPUs);
     vector<int *> buffersD2D(numGPUs); // buffer for D2D, that is, intra-GPU copy
@@ -199,8 +199,8 @@ void outputBandwidthMatrix(int numGPUs, bool p2p, P2PDataTransfer p2p_method) {
 
             // Block the stream until all the work is queued up
             // DANGER! - cudaMemcpy*Async may infinitely block waiting for
-            // room to push the operation, so keep the number of repeatitions
-            // relatively low.  Higher repeatitions will cause the delay kernel
+            // room to push the operation, so keep the number of repetitions
+            // relatively low.  Higher repetitions will cause the delay kernel
             // to timeout and lead to unstable results.
             *flag = 0;
             delay<<<1, 1, 0, stream[i]>>>(flag);
@@ -210,16 +210,15 @@ void outputBandwidthMatrix(int numGPUs, bool p2p, P2PDataTransfer p2p_method) {
 
             if (i == j) {
                 // Perform intra-GPU, D2D copies
-                performP2PCopy(buffers[i], i, buffersD2D[i], i, numElems, repeat,
-                               access, stream[i]);
-
+                performP2PCopy(buffers[i], i, buffersD2D[i], i, numElems,
+                               repeat, access, stream[i]);
             } else {
                 if (p2p_method == P2P_WRITE) {
-                    performP2PCopy(buffers[j], j, buffers[i], i, numElems, repeat, access,
-                                   stream[i]);
+                    performP2PCopy(buffers[j], j, buffers[i], i, numElems,
+                                   repeat, access, stream[i]);
                 } else {
-                    performP2PCopy(buffers[i], i, buffers[j], j, numElems, repeat, access,
-                                   stream[i]);
+                    performP2PCopy(buffers[i], i, buffers[j], j, numElems,
+                                   repeat, access, stream[i]);
                 }
             }
 
@@ -285,9 +284,8 @@ void outputBandwidthMatrix(int numGPUs, bool p2p, P2PDataTransfer p2p_method) {
     cudaCheckError();
 }
 
-void outputBidirectionalBandwidthMatrix(int numGPUs, bool p2p) {
-    int numElems = 10000000;
-    int repeat = 5;
+void outputBidirectionalBandwidthMatrix(int numGPUs, bool p2p, int numElems,
+                                        int repeat) {
     volatile int *flag = NULL;
     vector<int *> buffers(numGPUs);
     vector<int *> buffersD2D(numGPUs);
@@ -340,8 +338,8 @@ void outputBidirectionalBandwidthMatrix(int numGPUs, bool p2p) {
 
             // Block the stream until all the work is queued up
             // DANGER! - cudaMemcpy*Async may infinitely block waiting for
-            // room to push the operation, so keep the number of repeatitions
-            // relatively low.  Higher repeatitions will cause the delay kernel
+            // room to push the operation, so keep the number of repetitions
+            // relatively low.  Higher repetitions will cause the delay kernel
             // to timeout and lead to unstable results.
             *flag = 0;
             cudaSetDevice(i);
@@ -349,29 +347,29 @@ void outputBidirectionalBandwidthMatrix(int numGPUs, bool p2p) {
             delay<<<1, 1, 0, stream0[i]>>>(flag);
             cudaCheckError();
 
-            // Force stream1 not to start until stream0 does, in order to ensure
-            // the events on stream0 fully encompass the time needed for all
-            // operations
+            // Force stream1 not to start until stream0 does, in order to
+            // ensure that the events on stream0 fully encompass the time
+            // needed for all operations
             cudaEventRecord(start[i], stream0[i]);
             cudaStreamWaitEvent(stream1[j], start[i], 0);
 
             if (i == j) {
                 // For intra-GPU perform 2 memcopies buffersD2D <-> buffers
-                performP2PCopy(buffers[i], i, buffersD2D[i], i, numElems, repeat,
-                               access, stream0[i]);
-                performP2PCopy(buffersD2D[i], i, buffers[i], i, numElems, repeat,
-                               access, stream1[i]);
+                performP2PCopy(buffers[i], i, buffersD2D[i], i, numElems,
+                               repeat, access, stream0[i]);
+                performP2PCopy(buffersD2D[i], i, buffers[i], i, numElems,
+                               repeat, access, stream1[i]);
             } else {
                 if (access && p2p_mechanism == SM) {
                     cudaSetDevice(j);
                 }
-                performP2PCopy(buffers[i], i, buffers[j], j, numElems, repeat, access,
-                               stream1[j]);
+                performP2PCopy(buffers[i], i, buffers[j], j, numElems, repeat,
+                               access, stream1[j]);
                 if (access && p2p_mechanism == SM) {
                     cudaSetDevice(i);
                 }
-                performP2PCopy(buffers[j], j, buffers[i], i, numElems, repeat, access,
-                               stream0[i]);
+                performP2PCopy(buffers[j], j, buffers[i], i, numElems, repeat,
+                               access, stream0[i]);
             }
 
             // Notify stream0 that stream1 is complete and record the time of
@@ -442,7 +440,7 @@ void outputBidirectionalBandwidthMatrix(int numGPUs, bool p2p) {
 }
 
 void outputLatencyMatrix(int numGPUs, bool p2p, P2PDataTransfer p2p_method) {
-    int repeat = 100;
+    int repeat = 10000;
     int numElems = 4;  // perform 1-int4 transfer.
     volatile int *flag = NULL;
     StopWatchInterface *stopWatch = NULL;
@@ -497,8 +495,8 @@ void outputLatencyMatrix(int numGPUs, bool p2p, P2PDataTransfer p2p_method) {
 
             // Block the stream until all the work is queued up
             // DANGER! - cudaMemcpy*Async may infinitely block waiting for
-            // room to push the operation, so keep the number of repeatitions
-            // relatively low.  Higher repeatitions will cause the delay kernel
+            // room to push the operation, so keep the number of repetitions
+            // relatively low.  Higher repetitions will cause the delay kernel
             // to timeout and lead to unstable results.
             *flag = 0;
             delay<<<1, 1, 0, stream[i]>>>(flag);
@@ -508,15 +506,15 @@ void outputLatencyMatrix(int numGPUs, bool p2p, P2PDataTransfer p2p_method) {
             sdkResetTimer(&stopWatch);
             if (i == j) {
                 // Perform intra-GPU, D2D copies
-                performP2PCopy(buffers[i], i, buffersD2D[i], i, numElems, repeat,
-                               access, stream[i]);
+                performP2PCopy(buffers[i], i, buffersD2D[i], i, numElems,
+                               repeat, access, stream[i]);
             } else {
                 if (p2p_method == P2P_WRITE) {
-                    performP2PCopy(buffers[j], j, buffers[i], i, numElems, repeat, access,
-                                   stream[i]);
+                    performP2PCopy(buffers[j], j, buffers[i], i, numElems,
+                                   repeat, access, stream[i]);
                 } else {
-                    performP2PCopy(buffers[i], i, buffers[j], j, numElems, repeat, access,
-                                   stream[i]);
+                    performP2PCopy(buffers[i], i, buffers[j], j, numElems,
+                                   repeat, access, stream[i]);
                 }
             }
             float cpu_time_ms = sdkGetTimerValue(&stopWatch);
@@ -598,7 +596,7 @@ void outputLatencyMatrix(int numGPUs, bool p2p, P2PDataTransfer p2p_method) {
 }
 
 int main(int argc, char **argv) {
-    int numGPUs;
+    int numGPUs, nElements=10000000, nRepeat=5;
     P2PDataTransfer p2p_method = P2P_WRITE;
 
     cudaGetDeviceCount(&numGPUs);
@@ -618,6 +616,11 @@ int main(int argc, char **argv) {
         p2p_mechanism = SM;
     }
 
+    getCmdLineArgumentValue<int>(argc, (const char **)argv,
+                                 "nElements", &nElements);
+    getCmdLineArgumentValue<int>(argc, (const char **)argv,
+                                 "nRepeat", &nRepeat);
+
     printf("[%s]\n", sSampleName);
 
     // output devices
@@ -625,7 +628,8 @@ int main(int argc, char **argv) {
         cudaDeviceProp prop;
         cudaGetDeviceProperties(&prop, i);
         cudaCheckError();
-        printf("Device: %d, %s, pciBusID: %x, pciDeviceID: %x, pciDomainID:%x\n", i,
+        printf("Device: %d, %s, pciBusID: %x, pciDeviceID: %x, \
+pciDomainID:%x\n", i,
                prop.name, prop.pciBusID, prop.pciDeviceID, prop.pciDomainID);
     }
 
@@ -656,17 +660,17 @@ int main(int argc, char **argv) {
     }
 
     printf("Unidirectional P2P=Disabled Bandwidth Matrix (GB/s)\n");
-    outputBandwidthMatrix(numGPUs, false, P2P_WRITE);
+    outputBandwidthMatrix(numGPUs, false, P2P_WRITE, nElements, nRepeat);
     printf("Unidirectional P2P=Enabled Bandwidth (P2P Writes) Matrix (GB/s)\n");
-    outputBandwidthMatrix(numGPUs, true, P2P_WRITE);
+    outputBandwidthMatrix(numGPUs, true, P2P_WRITE, nElements, nRepeat);
     if (p2p_method == P2P_READ) {
         printf("Unidirectional P2P=Enabled Bandwidth (P2P Reads) Matrix (GB/s)\n");
-        outputBandwidthMatrix(numGPUs, true, p2p_method);
+        outputBandwidthMatrix(numGPUs, true, p2p_method, nElements, nRepeat);
     }
     printf("Bidirectional P2P=Disabled Bandwidth Matrix (GB/s)\n");
-    outputBidirectionalBandwidthMatrix(numGPUs, false);
+    outputBidirectionalBandwidthMatrix(numGPUs, false, nElements, nRepeat);
     printf("Bidirectional P2P=Enabled Bandwidth Matrix (GB/s)\n");
-    outputBidirectionalBandwidthMatrix(numGPUs, true);
+    outputBidirectionalBandwidthMatrix(numGPUs, true, nElements, nRepeat);
 
     printf("P2P=Disabled Latency Matrix (us)\n");
     outputLatencyMatrix(numGPUs, false, P2P_WRITE);
