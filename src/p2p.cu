@@ -59,8 +59,9 @@ P2PEngine p2p_mechanism = CE;  // By default use Copy Engine
     }
 __global__ void delay(volatile int *flag,
                       unsigned long long timeout_clocks = 10000000) {
-    // Wait until the application notifies us that it has completed queuing up the
-    // experiment, or timeout and exit, allowing the application to make progress
+    // Wait until the application notifies us that it has completed queuing up
+    // the experiment, or timeout and exit, allowing the application to make
+    // progress
     long long int start_clock, sample_clock;
     start_clock = clock64();
 
@@ -133,6 +134,7 @@ void performP2PCopy(int *dest, int destDevice, int *src, int srcDevice,
     cudaCheckError();
 
     if (p2p_mechanism == SM && p2paccess) {
+        printf("hola\n");
         for (int r = 0; r < repeat; r++) {
             copyp2p<<<numBlocks, blockSize, 0, streamToRun>>>(
                 (int4 *)dest, (int4 *)src, num_elems / 4);
@@ -150,7 +152,7 @@ void outputBandwidthMatrix(int numGPUs, bool p2p, P2PDataTransfer p2p_method) {
     int repeat = 5;
     volatile int *flag = NULL;
     vector<int *> buffers(numGPUs);
-    vector<int *> buffersD2D(numGPUs);  // buffer for D2D, that is, intra-GPU copy
+    vector<int *> buffersD2D(numGPUs); // buffer for D2D, that is, intra-GPU copy
     vector<cudaEvent_t> start(numGPUs);
     vector<cudaEvent_t> stop(numGPUs);
     vector<cudaStream_t> stream(numGPUs);

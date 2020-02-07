@@ -3,5 +3,3 @@ PROJECT(gpu-micro LANGUAGES CXX CUDA)
 
 INCLUDE_DIRECTORIES(src/helper)
 ADD_EXECUTABLE(p2p src/p2p.cu)
-
-ADD_EXECUTABLE(copy src/copy.cu src/common.cu)
