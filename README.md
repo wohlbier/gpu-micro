@@ -3,7 +3,7 @@ Some gpu micro kernels.
 p2p is modified from
 `https://github.com/NVIDIA/cuda-samples/blob/master/Samples/p2pBandwidthLatencyTest/p2pBandwidthLatencyTest.cu`
 
-Results on DGX-2
+Results on DGX-2. Someone was using devices 0,3,4,5.
 ```
 CUDA_VISIBLE_DEVICES=1,2,6,7,8,9,10,11,12,13,14,15 ./p2p --p2p_read --nElements=1073741824 --nRepeat=20
 [P2P (Peer-to-Peer) GPU Bandwidth Latency Test]
